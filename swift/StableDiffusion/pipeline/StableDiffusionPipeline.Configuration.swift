@@ -46,6 +46,8 @@ public struct PipelineConfiguration: Hashable {
     public var schedulerType: StableDiffusionScheduler = .pndmScheduler
     /// The spacing to use for scheduler sigmas and time steps. Only supported when using `.dpmppScheduler`.
     public var schedulerTimestepSpacing: TimeStepSpacing = .linspace
+    /// The prediction type for the model (epsilon for SD 1.5, vPrediction for SD 2.1)
+    public var schedulerPredictionType: SchedulerPredictionType = .epsilon
     /// Resolution dependent shifting of timestep schedules
     public var schedulerTimestepShift: Float = 3.0
     /// The type of RNG to use

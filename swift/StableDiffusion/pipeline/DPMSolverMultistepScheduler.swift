@@ -11,6 +11,12 @@ public enum TimeStepSpacing {
     case karras
 }
 
+/// Prediction type for the noise scheduler
+public enum SchedulerPredictionType {
+    case epsilon      // SD 1.5 and most models - predicts noise
+    case vPrediction  // SD 2.1 768 and some newer models - predicts velocity
+}
+
 /// A scheduler used to compute a de-noised image
 ///
 ///  This implementation matches:
@@ -20,7 +26,7 @@ public enum TimeStepSpacing {
 /// Limitations:
 ///  - Only implemented for DPM-Solver++ algorithm (not DPM-Solver).
 ///  - Second order only.
-///  - Assumes the model predicts epsilon.
+///  - Supports epsilon prediction (SD 1.5) and v_prediction (SD 2.1).
 ///  - No dynamic thresholding.
 ///  - `midpoint` solver algorithm.
 @available(iOS 16.2, macOS 13.1, *)
@@ -40,6 +46,9 @@ public final class DPMSolverMultistepScheduler: Scheduler {
     private(set) var lowerOrderStepped = 0
     
     private var usingKarrasSigmas = false
+    
+    /// The prediction type used by the model (epsilon or v_prediction)
+    public let predictionType: SchedulerPredictionType
 
     /// Whether to use lower-order solvers in the final steps. Only valid for less than 15 inference steps.
     /// We empirically find this trick can stabilize the sampling of DPM-Solver, especially with 10 or fewer steps.
@@ -57,6 +66,7 @@ public final class DPMSolverMultistepScheduler: Scheduler {
     ///   - betaStart: The starting value of beta for inference
     ///   - betaEnd: The end value for beta for inference
     ///   - timeStepSpacing: How to space time steps
+    ///   - predictionType: Whether the model uses epsilon or v_prediction (default: epsilon)
     /// - Returns: A scheduler ready for its first step
     public init(
         stepCount: Int = 50,
@@ -64,10 +74,12 @@ public final class DPMSolverMultistepScheduler: Scheduler {
         betaSchedule: BetaSchedule = .scaledLinear,
         betaStart: Float = 0.00085,
         betaEnd: Float = 0.012,
-        timeStepSpacing: TimeStepSpacing = .linspace
+        timeStepSpacing: TimeStepSpacing = .linspace,
+        predictionType: SchedulerPredictionType = .epsilon
     ) {
         self.trainStepCount = trainStepCount
         self.inferenceStepCount = stepCount
+        self.predictionType = predictionType
         
         switch betaSchedule {
         case .linear:
@@ -131,7 +143,7 @@ public final class DPMSolverMultistepScheduler: Scheduler {
     }
     
     /// Convert the model output to the corresponding type the algorithm needs.
-    /// This implementation is for second-order DPM-Solver++ assuming epsilon prediction.
+    /// Supports both epsilon prediction (SD 1.5) and v_prediction (SD 2.1).
     func convertModelOutput(modelOutput: MLShapedArray<Float32>, timestep: Int, sample: MLShapedArray<Float32>) -> MLShapedArray<Float32> {
         assert(modelOutput.scalarCount == sample.scalarCount)
         let scalarCount = modelOutput.scalarCount
@@ -142,8 +154,17 @@ public final class DPMSolverMultistepScheduler: Scheduler {
             assert(scalars.count == scalarCount)
             modelOutput.withUnsafeShapedBufferPointer { modelOutput, _, _ in
                 sample.withUnsafeShapedBufferPointer { sample, _, _ in
-                    for i in 0 ..< scalarCount {
-                        scalars.initializeElement(at: i, to: (sample[i] - modelOutput[i] * sigma_t) / alpha_t)
+                    switch predictionType {
+                    case .epsilon:
+                        // Epsilon prediction: x0 = (sample - epsilon * sigma) / alpha
+                        for i in 0 ..< scalarCount {
+                            scalars.initializeElement(at: i, to: (sample[i] - modelOutput[i] * sigma_t) / alpha_t)
+                        }
+                    case .vPrediction:
+                        // V-prediction: x0 = alpha * sample - sigma * v
+                        for i in 0 ..< scalarCount {
+                            scalars.initializeElement(at: i, to: alpha_t * sample[i] - sigma_t * modelOutput[i])
+                        }
                     }
                 }
             }
